@@ -41,6 +41,11 @@ async function syncSheet(url, action, data) {
 
 // ── CLAUDE AI EXTRACTION ──────────────────────────────────────────────────
 async function extractInvoice(b64, mime) {
+  const isPdf = mime === "application/pdf";
+  const fileBlock = isPdf
+    ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }
+    : { type: "image",    source: { type: "base64", media_type: mime, data: b64 } };
+
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -50,7 +55,7 @@ async function extractInvoice(b64, mime) {
       messages: [{
         role: "user",
         content: [
-          { type: "image", source: { type: "base64", media_type: mime, data: b64 } },
+          fileBlock,
           { type: "text", text: `Ανάλυσε αυτό το τιμολόγιο/δελτίο αποστολής F&B.
 Επέστρεψε ΜΟΝΟ JSON (χωρίς markdown):
 {
@@ -172,7 +177,7 @@ function Pill({status}) {
 function UploadZone({ onFiles }) {
   const [drag, setDrag] = useState(false);
   const ref = useRef();
-  const handle = files => onFiles(Array.from(files).filter(f=>f.type.startsWith("image/")));
+  const handle = files => onFiles(Array.from(files).filter(f=>f.type.startsWith("image/") || f.type==="application/pdf"));
   return (
     <div
       onDragOver={e=>{e.preventDefault();setDrag(true)}}
@@ -192,14 +197,14 @@ function UploadZone({ onFiles }) {
       <div style={{color:T.txt, fontSize:17, fontWeight:700, marginBottom:6, letterSpacing:"-0.01em"}}>
         Φωτογράφισε ή ανέβασε τιμολόγια
       </div>
-      <div style={{color:T.txt2, fontSize:13}}>JPG · PNG · HEIC — πολλαπλά αρχεία ταυτόχρονα</div>
+      <div style={{color:T.txt2, fontSize:13}}>JPG · PNG · HEIC · PDF — πολλαπλά αρχεία ταυτόχρονα</div>
       <div style={{marginTop:20, display:"inline-flex", alignItems:"center", gap:8,
         background:T.green, color:"#0a0f0b", borderRadius:10, padding:"10px 24px",
         fontSize:13, fontWeight:700, letterSpacing:"0.02em"}}>
         <Ic p="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" s={16} c="#0a0f0b"/>
         Επιλογή Αρχείων
       </div>
-      <input ref={ref} type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>handle(e.target.files)}/>
+      <input ref={ref} type="file" accept="image/*,application/pdf" multiple style={{display:"none"}} onChange={e=>handle(e.target.files)}/>
     </div>
   );
 }

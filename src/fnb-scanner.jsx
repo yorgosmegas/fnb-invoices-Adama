@@ -46,7 +46,7 @@ async function extractInvoice(b64, mime) {
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }
     : { type: "image",    source: { type: "base64", media_type: mime, data: b64 } };
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetch("/api/extract", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

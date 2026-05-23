@@ -46,16 +46,11 @@ async function extractInvoice(b64, mime) {
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }
     : { type: "image",    source: { type: "base64", media_type: mime, data: b64 } };
 
-  const res = await fetch("/api/extract", {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: {
-  "Content-Type": "application/json",
-  "x-api-key": import.meta.env.VITE_ANTHROPIC_KEY,
-  "anthropic-version": "2023-06-01",
-  "anthropic-dangerous-direct-browser-access": "true",
-},
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-4-20250514",
       max_tokens: 1000,
       messages: [{
         role: "user",
@@ -134,6 +129,77 @@ function exportXLSX(invoices, offers) {
   const ws4 = XLSX.utils.aoa_to_sheet(rows4);
   ws4["!cols"] = [18,24,14,10,18].map(w=>({wch:w}));
   XLSX.utils.book_append_sheet(wb, ws4, "Τιμές Προσφορών");
+
+  // Sheet 5 – Ανά Κατηγορία (Pivot)
+  const catMap = {};
+  invoices.forEach(inv => (inv.items||[]).forEach(it => {
+    const cat = it.category || "άλλο";
+    if (!catMap[cat]) catMap[cat] = { items: {}, total: 0, qty: 0 };
+    const name = it.name || "—";
+    if (!catMap[cat].items[name]) catMap[cat].items[name] = { qty: 0, total: 0, count: 0 };
+    catMap[cat].items[name].qty   += it.quantity || 0;
+    catMap[cat].items[name].total += it.total || 0;
+    catMap[cat].items[name].count += 1;
+    catMap[cat].total += it.total || 0;
+    catMap[cat].qty   += it.quantity || 0;
+  }));
+  const rows5 = [["Κατηγορία","Είδος","Συν. Ποσότητα","Φορές","Συν. Αξία €","% επί Συνόλου"]];
+  const grandTotalCat = Object.values(catMap).reduce((s,c)=>s+c.total,0);
+  Object.entries(catMap).sort((a,b)=>b[1].total-a[1].total).forEach(([cat,data])=>{
+    rows5.push([cat,"— ΣΥΝΟΛΟ ΚΑΤΗΓΟΡΙΑΣ —","",Object.values(data.items).reduce((s,i)=>s+i.count,0),data.total, grandTotalCat ? data.total/grandTotalCat : 0]);
+    Object.entries(data.items).sort((a,b)=>b[1].total-a[1].total).forEach(([name,d])=>{
+      rows5.push(["", name, d.qty, d.count, d.total, grandTotalCat ? d.total/grandTotalCat : 0]);
+    });
+    rows5.push(["","","","","",""]);
+  });
+  const ws5 = XLSX.utils.aoa_to_sheet(rows5);
+  ws5["!cols"] = [18,28,14,10,14,14].map(w=>({wch:w}));
+  const pctColCat = rows5.length;
+  for (let r=1; r<rows5.length; r++) {
+    const cell = XLSX.utils.encode_cell({r, c:5});
+    if (ws5[cell] && typeof ws5[cell].v === "number") ws5[cell].z = "0.0%";
+    const valCell = XLSX.utils.encode_cell({r, c:4});
+    if (ws5[valCell] && typeof ws5[valCell].v === "number") ws5[valCell].z = "#,##0.00";
+  }
+  XLSX.utils.book_append_sheet(wb, ws5, "Ανά Κατηγορία");
+
+  // Sheet 6 – Ανά Προμηθευτή (Pivot)
+  const supplMap = {};
+  invoices.forEach(inv => {
+    const s = inv.supplier || "Άγνωστος";
+    if (!supplMap[s]) supplMap[s] = { invoices: {}, items: {}, total: 0 };
+    const invKey = inv.invoice_number || inv.date || inv.id;
+    supplMap[s].invoices[invKey] = true;
+    (inv.items||[]).forEach(it => {
+      const name = it.name || "—";
+      if (!supplMap[s].items[name]) supplMap[s].items[name] = { qty:0, total:0, count:0, cat: it.category||"" };
+      supplMap[s].items[name].qty   += it.quantity || 0;
+      supplMap[s].items[name].total += it.total || 0;
+      supplMap[s].items[name].count += 1;
+      supplMap[s].total += it.total || 0;
+    });
+  });
+  const rows6 = [["Προμηθευτής","Είδος","Κατηγορία","Συν. Ποσότητα","Φορές","Συν. Αξία €","% επί Συνόλου"]];
+  const grandTotalSuppl = Object.values(supplMap).reduce((s,v)=>s+v.total,0);
+  Object.entries(supplMap).sort((a,b)=>b[1].total-a[1].total).forEach(([supp,data])=>{
+    const invCount = Object.keys(data.invoices).length;
+    rows6.push([supp, `— ${invCount} τιμολόγι${invCount===1?"ο":"α"} —`,"","",
+      Object.values(data.items).reduce((s,i)=>s+i.count,0),
+      data.total, grandTotalSuppl ? data.total/grandTotalSuppl : 0]);
+    Object.entries(data.items).sort((a,b)=>b[1].total-a[1].total).forEach(([name,d])=>{
+      rows6.push(["", name, d.cat, d.qty, d.count, d.total, grandTotalSuppl ? d.total/grandTotalSuppl : 0]);
+    });
+    rows6.push(["","","","","","",""]);
+  });
+  const ws6 = XLSX.utils.aoa_to_sheet(rows6);
+  ws6["!cols"] = [20,28,14,14,10,14,14].map(w=>({wch:w}));
+  for (let r=1; r<rows6.length; r++) {
+    const cell = XLSX.utils.encode_cell({r, c:6});
+    if (ws6[cell] && typeof ws6[cell].v === "number") ws6[cell].z = "0.0%";
+    const valCell = XLSX.utils.encode_cell({r, c:5});
+    if (ws6[valCell] && typeof ws6[valCell].v === "number") ws6[valCell].z = "#,##0.00";
+  }
+  XLSX.utils.book_append_sheet(wb, ws6, "Ανά Προμηθευτή");
 
   XLSX.writeFile(wb, `FnB_${new Date().toISOString().slice(0,10)}.xlsx`);
 }

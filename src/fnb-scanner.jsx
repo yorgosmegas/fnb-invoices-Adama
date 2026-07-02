@@ -46,42 +46,30 @@ async function extractInvoice(b64, mime) {
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }
     : { type: "image",    source: { type: "base64", media_type: mime, data: b64 } };
 
+  const prompt = isPdf
+    ? `Αυτό το PDF μπορεί να περιέχει ΠΟΛΛΑ τιμολόγια σε πολλές σελίδες. Εξήγαγε ΟΛΕΣ τις σελίδες.
+Επέστρεψε ΜΟΝΟ JSON array (χωρίς markdown), ένα object ανά τιμολόγιο:
+[{"supplier":"...","invoice_number":"...","date":"YYYY-MM-DD","items":[{"name":"...","category":"κρέας|ψάρι|λαχανικά|γαλακτοκομικά|ποτά|αναλώσιμα|άλλο","quantity":0,"unit":"kg|τεμ|lt|κιβ","unit_price":0,"total":0}],"subtotal":0,"vat":0,"grand_total":0}]
+Αν υπάρχει 1 τιμολόγιο, επέστρεψε array με 1 στοιχείο. ΜΟΝΟ JSON array.`
+    : `Ανάλυσε αυτό το τιμολόγιο F&B. Επέστρεψε ΜΟΝΟ JSON array με 1 στοιχείο (χωρίς markdown):
+[{"supplier":"...","invoice_number":"...","date":"YYYY-MM-DD","items":[{"name":"...","category":"κρέας|ψάρι|λαχανικά|γαλακτοκομικά|ποτά|αναλώσιμα|άλλο","quantity":0,"unit":"kg|τεμ|lt|κιβ","unit_price":0,"total":0}],"subtotal":0,"vat":0,"grand_total":0}]
+ΜΟΝΟ JSON array.`;
+
   const res = await fetch("/api/extract", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-5",
-      max_tokens: 1000,
-      messages: [{
-        role: "user",
-        content: [
-          fileBlock,
-          { type: "text", text: `Ανάλυσε αυτό το τιμολόγιο/δελτίο αποστολής F&B.
-Επέστρεψε ΜΟΝΟ JSON (χωρίς markdown):
-{
-  "supplier": "...",
-  "invoice_number": "...",
-  "date": "YYYY-MM-DD",
-  "items": [{
-    "name": "...",
-    "category": "κρέας|ψάρι|λαχανικά|γαλακτοκομικά|ποτά|αναλώσιμα|άλλο",
-    "quantity": 0,
-    "unit": "kg|τεμ|lt|κιβ",
-    "unit_price": 0,
-    "total": 0
-  }],
-  "subtotal": 0,
-  "vat": 0,
-  "grand_total": 0
-}
-Αγνόησε πεδία που δεν βλέπεις (βάλε null). Μόνο JSON.` }
-        ]
-      }]
+      max_tokens: 8000,
+      messages: [{ role: "user", content: [fileBlock, { type: "text", text: prompt }] }]
     })
   });
   const d = await res.json();
-  const txt = d.content?.find(b => b.type === "text")?.text || "{}";
-  return JSON.parse(txt.replace(/```json|```/g, "").trim());
+  if (d.error) throw new Error(d.error.message || "API error");
+  const txt = d.content?.find(b => b.type === "text")?.text || "[]";
+  const cleaned = txt.replace(/```json|```/g, "").trim();
+  const parsed = JSON.parse(cleaned);
+  return Array.isArray(parsed) ? parsed : [parsed];
 }
 
 // ── EXCEL EXPORT ──────────────────────────────────────────────────────────
@@ -559,27 +547,43 @@ export default function App() {
       const id = Date.now() + Math.random();
       const stub = { id, file_name: f.name, items:[], uploaded_at: new Date().toISOString() };
 
-      // Add placeholder
       setStatuses(p=>({...p,[id]:"scanning"}));
       setInvoices(p=>[stub,...p]);
 
       try {
         const b64 = await toB64(f);
-        const data = await extractInvoice(b64, f.type);
-        const inv = { ...data, id, file_name: f.name, uploaded_at: stub.uploaded_at };
+        const dataArr = await extractInvoice(b64, f.type); // always array
 
-        // Update with real data
-        setInvoices(p=>{
-          const updated = p.map(x=>x.id===id?inv:x);
+        // Remove placeholder
+        setInvoices(p => p.filter(x => x.id !== id));
+
+        // Add each invoice separately
+        const newInvs = dataArr.map((data, i) => ({
+          ...data,
+          id: id + i,
+          file_name: f.name,
+          uploaded_at: new Date().toISOString()
+        }));
+
+        setStatuses(p => {
+          const next = {...p};
+          delete next[id];
+          newInvs.forEach(inv => { next[inv.id] = "syncing"; });
+          return next;
+        });
+
+        setInvoices(p => {
+          const updated = [...newInvs, ...p];
           db.set("inv", updated);
           return updated;
         });
-        setStatuses(p=>({...p,[id]:"syncing"}));
 
-        // Sync to Sheets
-        const ok = await syncSheet(webhook,"add_invoice",{invoice:inv});
-        flashSheets(ok);
-        setStatuses(p=>({...p,[id]:"done"}));
+        // Sync each to Sheets
+        for (const inv of newInvs) {
+          await syncSheet(webhook, "add_invoice", {invoice: inv});
+          setStatuses(p=>({...p,[inv.id]:"done"}));
+        }
+        flashSheets(true);
 
       } catch(e) {
         setStatuses(p=>({...p,[id]:"error"}));
